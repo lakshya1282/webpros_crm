@@ -1,0 +1,334 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum PipelineStage {
+  NEW_LEAD
+  CONTACTED
+  REPLIED
+  NEGOTIATING
+  WON
+  LOST
+}
+
+enum MessagingStatus {
+  NOT_CONTACTED
+  QUEUED
+  SENT
+  DELIVERED
+  REPLIED
+  FAILED
+}
+
+enum CampaignStatus {
+  DRAFT
+  QUEUED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+}
+
+enum CampaignContactStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  SKIPPED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageEventType {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum ProjectStatus {
+  IN_PROGRESS
+  DELIVERED
+  PAID
+}
+
+enum ImportBatchStatus {
+  UPLOADED
+  PARSING
+  VALIDATING
+  READY
+  COMMITTED
+  FAILED
+}
+
+// ============================================================
+// USER
+// Even v1 is single-user, keep User entity for future multi-user
+// ============================================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  contacts      Contact[]
+  campaigns     Campaign[]
+  importBatches ImportBatch[]
+  projects      Project[]
+
+  @@map("users")
+}
+
+// ============================================================
+// TAG
+// Normalized tag system for contact segmentation
+// ============================================================
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  contactTags ContactTag[]
+
+  @@map("tags")
+}
+
+model ContactTag {
+  contactId String  @map("contact_id")
+  tagId     String  @map("tag_id")
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([contactId, tagId])
+  @@map("contact_tags")
+}
+
+// ============================================================
+// CONTACT
+// Core CRM entity. Phone is stored in E.164 format (UNIQUE).
+// ============================================================
+
+model Contact {
+  id             String          @id @default(cuid())
+  userId         String          @map("user_id")
+  name           String
+  phone          String          @unique // E.164 format e.g. +919876543210
+  company        String?
+  email          String?
+  source         String?
+  pipelineStage  PipelineStage   @default(NEW_LEAD) @map("pipeline_stage")
+  messagingStatus MessagingStatus @default(NOT_CONTACTED) @map("messaging_status")
+  doNotContact   Boolean         @default(false) @map("do_not_contact")
+  notes          String?
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+  archivedAt     DateTime?       @map("archived_at")
+
+  user             User              @relation(fields: [userId], references: [id])
+  contactTags      ContactTag[]
+  campaignContacts CampaignContact[]
+  messages         Message[]
+  projects         Project[]
+  importBatch      ImportBatch?      @relation(fields: [importBatchId], references: [id])
+  importBatchId    String?           @map("import_batch_id")
+
+  @@index([pipelineStage])
+  @@index([messagingStatus])
+  @@index([doNotContact])
+  @@index([userId])
+  @@index([archivedAt])
+  @@map("contacts")
+}
+
+// ============================================================
+// IMPORT BATCH
+// Every file upload creates a batch record
+// ============================================================
+
+model ImportBatch {
+  id            String            @id @default(cuid())
+  userId        String            @map("user_id")
+  filename      String
+  storageKey    String?           @map("storage_key") // Supabase Storage path
+  status        ImportBatchStatus @default(UPLOADED)
+  tagName       String?           @map("tag_name") // e.g. "Instagram agencies – Sept batch"
+  totalRows     Int               @default(0) @map("total_rows")
+  validRows     Int               @default(0) @map("valid_rows")
+  invalidRows   Int               @default(0) @map("invalid_rows")
+  duplicateRows Int               @default(0) @map("duplicate_rows")
+  errorMessage  String?           @map("error_message")
+  columnMapping Json?             @map("column_mapping") // stored mapping config
+  createdAt     DateTime          @default(now()) @map("created_at")
+  completedAt   DateTime?         @map("completed_at")
+
+  user     User      @relation(fields: [userId], references: [id])
+  contacts Contact[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("import_batches")
+}
+
+// ============================================================
+// CAMPAIGN
+// ============================================================
+
+model Campaign {
+  id              String         @id @default(cuid())
+  userId          String         @map("user_id")
+  name            String
+  messageTemplate String         @map("message_template")
+  status          CampaignStatus @default(DRAFT)
+  createdAt       DateTime       @default(now()) @map("created_at")
+  startedAt       DateTime?      @map("started_at")
+  completedAt     DateTime?      @map("completed_at")
+
+  user             User              @relation(fields: [userId], references: [id])
+  campaignContacts CampaignContact[]
+  messages         Message[]
+  projects         Project[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("campaigns")
+}
+
+// ============================================================
+// CAMPAIGN CONTACT
+// Join table — one row per contact per campaign
+// ============================================================
+
+model CampaignContact {
+  id                String                @id @default(cuid())
+  campaignId        String                @map("campaign_id")
+  contactId         String                @map("contact_id")
+  sendStatus        CampaignContactStatus @default(QUEUED) @map("send_status")
+  providerMessageId String?               @map("provider_message_id")
+  queuedAt          DateTime?             @map("queued_at")
+  sentAt            DateTime?             @map("sent_at")
+  deliveredAt       DateTime?             @map("delivered_at")
+  failedAt          DateTime?             @map("failed_at")
+  errorReason       String?               @map("error_reason")
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact  @relation(fields: [contactId], references: [id])
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId])
+  @@index([contactId])
+  @@index([sendStatus])
+  @@map("campaign_contacts")
+}
+
+// ============================================================
+// MESSAGE
+// Full conversation log — immutable after creation
+// ============================================================
+
+model Message {
+  id                String           @id @default(cuid())
+  contactId         String           @map("contact_id")
+  campaignId        String?          @map("campaign_id")
+  direction         MessageDirection
+  body              String
+  providerMessageId String?          @map("provider_message_id")
+  createdAt         DateTime         @default(now()) @map("created_at")
+
+  contact  Contact        @relation(fields: [contactId], references: [id])
+  campaign Campaign?      @relation(fields: [campaignId], references: [id])
+  events   MessageEvent[]
+
+  @@index([contactId])
+  @@index([createdAt])
+  @@index([providerMessageId])
+  @@map("messages")
+}
+
+// ============================================================
+// MESSAGE EVENT
+// Audit trail for message delivery status changes
+// ============================================================
+
+model MessageEvent {
+  id        String           @id @default(cuid())
+  messageId String           @map("message_id")
+  eventType MessageEventType @map("event_type")
+  metadata  Json?
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@index([eventType])
+  @@map("message_events")
+}
+
+// ============================================================
+// PROJECT
+// Auto-created when a contact's pipeline_stage = WON
+// campaign_id is nullable (project can exist without a campaign)
+// ============================================================
+
+model Project {
+  id         String        @id @default(cuid())
+  userId     String        @map("user_id")
+  contactId  String        @map("contact_id")
+  campaignId String?       @map("campaign_id")
+  name       String
+  dealValue  Decimal?      @map("deal_value") @db.Decimal(12, 2)
+  status     ProjectStatus @default(IN_PROGRESS)
+  notes      String?
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+
+  user     User     @relation(fields: [userId], references: [id])
+  contact  Contact  @relation(fields: [contactId], references: [id])
+  campaign Campaign? @relation(fields: [campaignId], references: [id])
+  tasks    Task[]
+
+  @@index([contactId])
+  @@index([userId])
+  @@index([status])
+  @@map("projects")
+}
+
+// ============================================================
+// TASK
+// Belongs to a Project
+// ============================================================
+
+model Task {
+  id        String    @id @default(cuid())
+  projectId String    @map("project_id")
+  title     String
+  dueDate   DateTime? @map("due_date")
+  isDone    Boolean   @default(false) @map("is_done")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([dueDate])
+  @@index([isDone])
+  @@map("tasks")
+}
