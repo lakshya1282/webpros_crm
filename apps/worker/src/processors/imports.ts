@@ -151,7 +151,7 @@ export function startImportWorker(redis: IORedis) {
             duplicateCount++;
             const existingId = phoneToContactId.get(e164Phone);
             if (tagId && existingId) {
-              existingContactIdsToTag.push(existingId);
+              existingContactIdsToTag.push(String(existingId));
             }
             continue;
           }
