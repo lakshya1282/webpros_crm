@@ -2,7 +2,7 @@
   "name": "whatsapp-crm",
   "version": "1.0.0",
   "private": true,
-  "packageManager": "pnpm@9.15.5",
+  "packageManager": "pnpm@9.1.0",
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
